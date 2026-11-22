@@ -24,8 +24,8 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_MEASURING_MODE_NATURAL,
     DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT, DWRITE_TEXT_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING, DWRITE_TRIMMING,
-    DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory, IDWriteFactory,
-    IDWriteTextFormat,
+    DWRITE_TEXT_METRICS, DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWriteCreateFactory,
+    IDWriteFactory, IDWriteTextFormat,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMSBT_TRANSIENTWINDOW, DWMWA_BORDER_COLOR, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_USE_IMMERSIVE_DARK_MODE,
@@ -40,11 +40,23 @@ use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, GetForegroundWindow, HWND_TOPMOST, IDC_ARROW, LoadCursorW, RegisterClassW,
-    SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SetForegroundWindow, SetWindowPos, ShowWindow, WA_INACTIVE, WM_ACTIVATE,
-    WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WNDCLASSW, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, GetForegroundWindow, HWND_TOPMOST, IDC_ARROW, KillTimer, LoadCursorW,
+    RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SetForegroundWindow, SetTimer, SetWindowPos, ShowWindow,
+    WA_INACTIVE, WM_ACTIVATE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_PAINT, WM_TIMER, WNDCLASSW,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
+
+/// Timer that shows a button's tooltip after the pointer rests on it.
+const TIP_TIMER: usize = 1;
+const TIP_DELAY_MS: u32 = 500;
+
+fn tooltip_text(hit: &Hit) -> Option<&'static str> {
+    match hit {
+        Hit::Refresh => Some("Refresh devices"),
+        Hit::Quit => Some("Quit"),
+        _ => None,
+    }
+}
 use windows::core::{HSTRING, Result, w};
 
 use crate::model::{Backend, Kind, Snapshot, Status, channel_label, short_name};
@@ -133,6 +145,8 @@ struct Theme {
     on_accent: D2D1_COLOR_F,
     divider: D2D1_COLOR_F,
     footer: D2D1_COLOR_F,
+    tip_bg: D2D1_COLOR_F,
+    tip_border: D2D1_COLOR_F,
 }
 
 fn c(r: u8, g: u8, b: u8, a: f32) -> D2D1_COLOR_F {
@@ -170,6 +184,8 @@ fn theme() -> Theme {
             on_accent: c(0, 0, 0, 1.0),
             divider: c(255, 255, 255, 0.08),
             footer: c(0, 0, 0, 0.18),
+            tip_bg: c(44, 44, 44, 1.0),
+            tip_border: c(255, 255, 255, 0.12),
         }
     } else {
         Theme {
@@ -183,6 +199,8 @@ fn theme() -> Theme {
             on_accent: c(255, 255, 255, 1.0),
             divider: c(0, 0, 0, 0.08),
             footer: c(0, 0, 0, 0.03),
+            tip_bg: c(249, 249, 249, 1.0),
+            tip_border: c(0, 0, 0, 0.12),
         }
     }
 }
@@ -249,6 +267,7 @@ impl Fonts {
 pub struct Flyout {
     hwnd: HWND,
     d2d: ID2D1Factory,
+    dw: IDWriteFactory,
     rt: Option<ID2D1HwndRenderTarget>,
     fonts: Fonts,
     acrylic: bool,
@@ -270,6 +289,8 @@ pub struct Flyout {
     shown_at: Instant,
     hidden_at: Option<Instant>,
     pinned: bool,
+    /// Tooltip for the hovered button is showing (after the hover delay).
+    tip: bool,
 }
 
 thread_local! {
@@ -329,6 +350,7 @@ pub fn init() -> Result<()> {
         let fly = Flyout {
             hwnd,
             d2d,
+            dw,
             rt: None,
             fonts,
             acrylic,
@@ -347,6 +369,7 @@ pub fn init() -> Result<()> {
             shown_at: Instant::now(),
             hidden_at: None,
             pinned: false,
+            tip: false,
         };
         FLY.with(|cell| *cell.borrow_mut() = Some(fly));
     }
@@ -441,6 +464,7 @@ impl Flyout {
         }
         self.visible = false;
         self.pinned = false;
+        self.set_hover(None);
         self.hidden_at = Some(Instant::now());
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_HIDE);
@@ -675,20 +699,36 @@ impl Flyout {
                 }
                 let h = self.hit_at(lp);
                 if h != self.hover {
-                    self.hover = h;
+                    self.set_hover(h);
                     self.invalidate();
                 }
                 Some(LRESULT(0))
             }
             WM_MOUSELEAVE => {
                 self.tracking = false;
-                if self.hover.take().is_some() {
+                if self.hover.is_some() {
+                    self.set_hover(None);
+                    self.invalidate();
+                }
+                Some(LRESULT(0))
+            }
+            WM_TIMER if wp.0 == TIP_TIMER => {
+                unsafe {
+                    let _ = KillTimer(self.hwnd, TIP_TIMER);
+                }
+                if self.hover.as_ref().and_then(tooltip_text).is_some() {
+                    self.tip = true;
                     self.invalidate();
                 }
                 Some(LRESULT(0))
             }
             WM_LBUTTONUP => {
                 if let Some(h) = self.hit_at(lp) {
+                    // A click dismisses the tooltip, like standard Windows buttons.
+                    if self.tip {
+                        self.tip = false;
+                        self.invalidate();
+                    }
                     self.click(h);
                 }
                 Some(LRESULT(0))
@@ -703,6 +743,47 @@ impl Flyout {
             }
             _ => None,
         }
+    }
+
+    /// Change the hovered item; restarts the tooltip delay for buttons.
+    fn set_hover(&mut self, h: Option<Hit>) {
+        self.hover = h;
+        self.tip = false;
+        unsafe {
+            let _ = KillTimer(self.hwnd, TIP_TIMER);
+            if self.hover.as_ref().and_then(tooltip_text).is_some() {
+                SetTimer(self.hwnd, TIP_TIMER, TIP_DELAY_MS, None);
+            }
+        }
+    }
+
+    /// Small Windows 11 style tooltip above the hovered footer button.
+    fn draw_tooltip(&self, p: &Painter, t: &Theme) {
+        if !self.tip {
+            return;
+        }
+        let Some(hit) = self.hover.as_ref() else { return };
+        let Some(text) = tooltip_text(hit) else { return };
+        let Some((btn, _)) = self.hits.iter().find(|(_, h)| h == hit) else { return };
+
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let text_w = unsafe {
+            self.dw
+                .CreateTextLayout(&wide, &self.fonts.small, 400.0, 40.0)
+                .and_then(|l| {
+                    let mut m = DWRITE_TEXT_METRICS::default();
+                    l.GetMetrics(&mut m).map(|_| m.widthIncludingTrailingWhitespace)
+                })
+                .unwrap_or(80.0)
+        };
+        let (w, h) = (text_w.ceil() + 18.0, 26.0);
+        // Centred over the button, kept inside the flyout.
+        let x = (btn.x + btn.w / 2.0 - w / 2.0).clamp(6.0, WIDTH - w - 6.0);
+        let y = btn.y - h - 6.0;
+        let r = R::new(x, y, w, h);
+        p.fill_round(r, 4.0, t.tip_bg);
+        p.stroke_round(r, 4.0, t.tip_border, 1.0);
+        p.text(text, &self.fonts.small, r, t.text, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
     fn ensure_rt(&mut self) -> Result<ID2D1HwndRenderTarget> {
@@ -747,6 +828,7 @@ impl Flyout {
             for el in &self.els {
                 self.draw_el(&p, el, &t);
             }
+            self.draw_tooltip(&p, &t);
             rt.EndDraw(None, None)?;
         }
         Ok(())
