@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "audio-output-device-switcher"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "native-tls",
  "serde",
