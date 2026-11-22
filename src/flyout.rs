@@ -35,7 +35,7 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, InvalidateRect, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint, ValidateRect,
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent, VK_ESCAPE};
@@ -57,7 +57,56 @@ fn tooltip_text(hit: &Hit) -> Option<&'static str> {
         _ => None,
     }
 }
-use windows::core::{HSTRING, Result, w};
+use windows::core::{HSTRING, Result, s, w};
+
+/// See-through glass: the "acrylic blur behind" accent that the Start menu and
+/// taskbar use, with our own tint. It goes through the undocumented
+/// `SetWindowCompositionAttribute` in user32; returns false if Windows doesn't
+/// offer it, and the caller then falls back to the standard system backdrop.
+fn set_acrylic_accent(hwnd: HWND, tint: (u8, u8, u8, u8)) -> bool {
+    use std::ffi::c_void;
+    #[repr(C)]
+    struct AccentPolicy {
+        state: u32,
+        flags: u32,
+        gradient_color: u32, // AABBGGRR
+        animation_id: u32,
+    }
+    #[repr(C)]
+    struct CompositionData {
+        attribute: u32,
+        data: *mut c_void,
+        size: usize,
+    }
+    const ACCENT_ENABLE_ACRYLICBLURBEHIND: u32 = 4;
+    const WCA_ACCENT_POLICY: u32 = 19;
+    type SetWindowCompositionAttribute = unsafe extern "system" fn(HWND, *mut CompositionData) -> BOOL;
+
+    let (r, g, b, a) = tint;
+    let mut policy = AccentPolicy {
+        state: ACCENT_ENABLE_ACRYLICBLURBEHIND,
+        flags: 2,
+        gradient_color: (a as u32) << 24 | (b as u32) << 16 | (g as u32) << 8 | r as u32,
+        animation_id: 0,
+    };
+    let mut data = CompositionData {
+        attribute: WCA_ACCENT_POLICY,
+        data: &mut policy as *mut _ as *mut c_void,
+        size: size_of::<AccentPolicy>(),
+    };
+    unsafe {
+        let Ok(user32) = GetModuleHandleW(w!("user32.dll")) else { return false };
+        let Some(proc) = GetProcAddress(user32, s!("SetWindowCompositionAttribute")) else { return false };
+        let set: SetWindowCompositionAttribute = std::mem::transmute(proc);
+        set(hwnd, &mut data).as_bool()
+    }
+}
+
+/// Glass tint per theme (r, g, b, alpha): light enough to let the colours
+/// behind show through, dark/light enough to keep the text readable.
+fn glass_tint(dark: bool) -> (u8, u8, u8, u8) {
+    if dark { (28, 28, 30, 0x78) } else { (243, 243, 245, 0x9c) }
+}
 
 use crate::model::{Backend, Kind, Snapshot, Status, channel_label, short_name};
 use crate::sonar::Mode;
@@ -275,6 +324,8 @@ pub struct Flyout {
     rt: Option<ID2D1HwndRenderTarget>,
     fonts: Fonts,
     acrylic: bool,
+    /// See-through glass via the acrylic accent (else the standard backdrop).
+    glass: bool,
     theme: Theme,
 
     snap: Snapshot,
@@ -340,8 +391,11 @@ pub fn init() -> Result<()> {
 
         let corner = DWMWCP_ROUND;
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as _, 4);
-        let backdrop = DWMSBT_TRANSIENTWINDOW;
-        let acrylic = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop as *const _ as _, 4).is_ok();
+        let glass = set_acrylic_accent(hwnd, glass_tint(!crate::light_taskbar()));
+        let acrylic = glass || {
+            let backdrop = DWMSBT_TRANSIENTWINDOW;
+            DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop as *const _ as _, 4).is_ok()
+        };
         if acrylic {
             let m = MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
             let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
@@ -358,6 +412,7 @@ pub fn init() -> Result<()> {
             rt: None,
             fonts,
             acrylic,
+            glass,
             theme: theme(),
             snap: Snapshot::offline(),
             autostart: false,
@@ -450,6 +505,10 @@ impl Flyout {
             // Subtle 1px border like other shell flyouts.
             let border = if self.theme.dark { COLORREF(0x00_3a_3a_3a) } else { COLORREF(0x00_d8_d8_d8) };
             let _ = DwmSetWindowAttribute(self.hwnd, DWMWA_BORDER_COLOR, &border as *const _ as _, 4);
+        }
+        if self.glass {
+            // The tint follows the current light/dark taskbar setting.
+            set_acrylic_accent(self.hwnd, glass_tint(self.theme.dark));
         }
         self.layout();
         self.place();
@@ -829,8 +888,8 @@ impl Flyout {
             rt.Clear(Some(&bg));
             let brush = rt.CreateSolidColorBrush(&t.text, None)?;
             let p = Painter { rt: &rt, brush: &brush };
-            if self.acrylic {
-                // Fluent acrylic: the blurred backdrop under a theme-coloured tint.
+            if self.acrylic && !self.glass {
+                // Standard backdrop: add the theme tint. (Glass carries its own tint.)
                 p.fill_rect(R::new(0.0, 0.0, WIDTH, self.height), t.tint);
             }
             for el in &self.els {
