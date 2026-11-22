@@ -22,6 +22,8 @@ On Windows 11 a new tray icon first lands in the overflow (**^**) area. Drag it 
 
 Requirements: Windows 10 or 11 (x64). The acrylic background needs Windows 11 22H2 or later; older versions get a solid background.
 
+Releases are built from source by [GitHub Actions](.github/workflows/release.yml) and signed as described in the [Code signing policy](#code-signing-policy).
+
 ## Build
 Requires [Rust](https://rustup.rs) (stable, MSVC toolchain) and the Visual Studio C++ build tools.
 ```powershell
@@ -58,6 +60,19 @@ Because this API is unofficial, a SteelSeries GG update can break it. The app th
 | `src/winaudio.rs` | Core Audio device list and form factor; default-device switching |
 | `src/model.rs` | state, headset/speakers/mixed logic, tooltip |
 | `src/icons.rs` | tray icons drawn with tiny-skia |
+
+## Code signing policy
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- **Committers and reviewers:** [Gerdon Abbink](https://github.com/GerdonAbbink)
+- **Approvers:** [Gerdon Abbink](https://github.com/GerdonAbbink)
+
+Only release builds made by this repository's [release workflow](.github/workflows/release.yml) on GitHub-hosted runners are signed, and every signing request is approved by hand. Maintainer steps are in [docs/RELEASING.md](docs/RELEASING.md).
+
+### Privacy policy
+This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+The app only talks to SteelSeries GG/Sonar on your own computer (`127.0.0.1`) to read and change audio routing. It has no telemetry, no update checks and no other network access.
 
 ## Credits
 - Tray approach inspired by [Wireless-Device-Battery-Monitor](https://github.com/ZGMFX01A/Wireless-Device-Battery-Monitor). No code was copied.

@@ -1,0 +1,125 @@
+# Builds a tagged version on GitHub-hosted runners, signs it through SignPath
+# (when configured) and publishes it as a GitHub release.
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# The tag must match the version in Cargo.toml. Signing needs the repository
+# variable SIGNPATH_ORGANIZATION_ID and the secret SIGNPATH_API_TOKEN; without
+# them the release is published unsigned. See docs/RELEASING.md.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and (re)publish, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write # create the release and upload the exe
+  actions: read # lets SignPath download the unsigned artifact
+
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+
+env:
+  TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  EXE: audio-output-device-switcher.exe
+  SIGNPATH_PROJECT_SLUG: Audio-Output-Device-Switcher
+  SIGNPATH_SIGNING_POLICY: release-signing
+
+jobs:
+  release:
+    runs-on: windows-latest
+    # Waiting for the manual signing approval in SignPath happens inside this job.
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Install Rust (stable)
+        run: rustup update stable --no-self-update && rustup default stable
+
+      - name: Check tag matches Cargo.toml version
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$version" -ne $env:TAG) {
+            throw "Tag $env:TAG does not match Cargo.toml version $version"
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Stage unsigned exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force unsigned | Out-Null
+          Copy-Item "target\release\$env:EXE" unsigned\
+
+      - name: Upload unsigned exe
+        id: upload-unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          name: unsigned-${{ env.TAG }}
+          path: unsigned/${{ env.EXE }}
+
+      - name: Sign with SignPath
+        if: vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          # Leaves time to approve the signing request in SignPath.
+          wait-for-completion-timeout-in-seconds: 14400
+          output-artifact-directory: signed
+          parameters: |
+            version: "${{ env.VERSION }}"
+
+      - name: Pick exe and verify signature
+        shell: pwsh
+        run: |
+          if ("${{ vars.SIGNPATH_ORGANIZATION_ID }}" -ne "") {
+            $exe = "signed\$env:EXE"
+            $sig = Get-AuthenticodeSignature $exe
+            if ($sig.Status -ne "Valid") { throw "Signature check failed: $($sig.Status) $($sig.StatusMessage)" }
+            "Signed by: $($sig.SignerCertificate.Subject)"
+            "SIGNED=true" >> $env:GITHUB_ENV
+          } else {
+            $exe = "unsigned\$env:EXE"
+            "::warning::SignPath is not configured; publishing an unsigned exe."
+            "SIGNED=false" >> $env:GITHUB_ENV
+          }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item $exe out\
+          (Get-Item "out\$env:EXE").VersionInfo | Format-List ProductName, ProductVersion
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $signing = if ($env:SIGNED -eq "true") {
+            "Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org)."
+          } else {
+            "This build is not code-signed."
+          }
+          $notes = @"
+          Download ``$env:EXE`` below and run it; there's no installer.
+
+          $signing See the [Code signing policy](https://github.com/${{ github.repository }}#code-signing-policy).
+          "@
+          gh release view $env:TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG "out\$env:EXE" --clobber
+          } else {
+            gh release create $env:TAG "out\$env:EXE" --verify-tag --title $env:TAG --generate-notes --notes $notes
+          }

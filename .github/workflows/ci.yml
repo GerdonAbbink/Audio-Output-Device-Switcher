@@ -1,0 +1,37 @@
+# Builds every push and pull request, so a broken build shows up before a release.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (stable)
+        run: rustup update stable --no-self-update && rustup default stable
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Show embedded version info
+        shell: pwsh
+        run: |
+          (Get-Item target\release\audio-output-device-switcher.exe).VersionInfo |
+            Format-List ProductName, ProductVersion, FileDescription, LegalCopyright
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v7
+        with:
+          name: audio-output-device-switcher-${{ github.sha }}
+          path: target/release/audio-output-device-switcher.exe
+          retention-days: 14
