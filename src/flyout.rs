@@ -147,6 +147,8 @@ struct Theme {
     footer: D2D1_COLOR_F,
     tip_bg: D2D1_COLOR_F,
     tip_border: D2D1_COLOR_F,
+    /// Layer painted over the acrylic backdrop, like the shell's own flyouts.
+    tint: D2D1_COLOR_F,
 }
 
 fn c(r: u8, g: u8, b: u8, a: f32) -> D2D1_COLOR_F {
@@ -175,32 +177,34 @@ fn theme() -> Theme {
     if dark {
         Theme {
             dark,
-            fill: c(40, 40, 40, 1.0),
+            fill: c(36, 36, 36, 1.0),
             text: c(255, 255, 255, 1.0),
-            text2: c(255, 255, 255, 0.62),
-            hover: c(255, 255, 255, 0.06),
-            selected: c(255, 255, 255, 0.09),
+            text2: c(255, 255, 255, 0.72),
+            hover: c(255, 255, 255, 0.05),
+            selected: c(255, 255, 255, 0.08),
             accent: c(ar, ag, ab, 1.0),
-            on_accent: c(0, 0, 0, 1.0),
-            divider: c(255, 255, 255, 0.08),
-            footer: c(0, 0, 0, 0.18),
+            on_accent: c(0, 26, 41, 1.0),
+            divider: c(255, 255, 255, 0.07),
+            footer: c(0, 0, 0, 0.22),
             tip_bg: c(44, 44, 44, 1.0),
             tip_border: c(255, 255, 255, 0.12),
+            tint: c(32, 32, 32, 0.45),
         }
     } else {
         Theme {
             dark,
             fill: c(243, 243, 243, 1.0),
             text: c(0, 0, 0, 0.9),
-            text2: c(0, 0, 0, 0.6),
+            text2: c(0, 0, 0, 0.62),
             hover: c(0, 0, 0, 0.04),
             selected: c(0, 0, 0, 0.06),
             accent: c(ar, ag, ab, 1.0),
             on_accent: c(255, 255, 255, 1.0),
             divider: c(0, 0, 0, 0.08),
-            footer: c(0, 0, 0, 0.03),
+            footer: c(0, 0, 0, 0.04),
             tip_bg: c(249, 249, 249, 1.0),
             tip_border: c(0, 0, 0, 0.12),
+            tint: c(243, 243, 243, 0.5),
         }
     }
 }
@@ -253,7 +257,7 @@ impl Fonts {
         let display = if font_exists(dw, "Segoe UI Variable Display") { "Segoe UI Variable Display" } else { text };
         let icons = if font_exists(dw, "Segoe Fluent Icons") { "Segoe Fluent Icons" } else { "Segoe MDL2 Assets" };
         Ok(Fonts {
-            title: make_format(dw, display, 16.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
+            title: make_format(dw, display, 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
             body: make_format(dw, text, 14.0, DWRITE_FONT_WEIGHT_NORMAL)?,
             small: make_format(dw, text, 12.0, DWRITE_FONT_WEIGHT_NORMAL)?,
             label: make_format(dw, text, 12.0, DWRITE_FONT_WEIGHT_SEMI_BOLD)?,
@@ -633,8 +637,8 @@ impl Flyout {
         y += 10.0;
         let fr = R::new(0.0, y, WIDTH, 56.0);
         hits.push((R::new(8.0, y + 10.0, 210.0, 36.0), Hit::Autostart));
-        hits.push((R::new(WIDTH - 88.0, y + 12.0, 32.0, 32.0), Hit::Refresh));
-        hits.push((R::new(WIDTH - 48.0, y + 12.0, 32.0, 32.0), Hit::Quit));
+        hits.push((R::new(WIDTH - 92.0, y + 10.0, 36.0, 36.0), Hit::Refresh));
+        hits.push((R::new(WIDTH - 50.0, y + 10.0, 36.0, 36.0), Hit::Quit));
         els.push(El::Footer { r: fr });
         y += 56.0;
 
@@ -825,6 +829,10 @@ impl Flyout {
             rt.Clear(Some(&bg));
             let brush = rt.CreateSolidColorBrush(&t.text, None)?;
             let p = Painter { rt: &rt, brush: &brush };
+            if self.acrylic {
+                // Fluent acrylic: the blurred backdrop under a theme-coloured tint.
+                p.fill_rect(R::new(0.0, 0.0, WIDTH, self.height), t.tint);
+            }
             for el in &self.els {
                 self.draw_el(&p, el, &t);
             }
@@ -839,7 +847,7 @@ impl Flyout {
         match el {
             El::Header { r, glyph, title, subtitle } => {
                 let tile = R::new(16.0, r.y + 16.0, 40.0, 40.0);
-                p.fill_round(tile, 8.0, t.accent);
+                p.fill_round(tile, 6.0, t.accent);
                 p.text(&glyph.to_string(), &f.icon20, tile, t.on_accent, DWRITE_TEXT_ALIGNMENT_CENTER);
                 p.text(title, &f.title, R::new(68.0, r.y + 14.0, WIDTH - 84.0, 24.0), t.text, DWRITE_TEXT_ALIGNMENT_LEADING);
                 p.text(subtitle, &f.small, R::new(68.0, r.y + 38.0, WIDTH - 84.0, 18.0), t.text2, DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -896,8 +904,8 @@ impl Flyout {
                     p.circle(sw.x + 10.0, cy, 5.0, t.text2);
                 }
                 p.text("Start with Windows", &f.body, R::new(68.0, r.y, 150.0, r.h), t.text, DWRITE_TEXT_ALIGNMENT_LEADING);
-                p.text(&G_REFRESH.to_string(), &f.icon16, R::new(WIDTH - 88.0, r.y + 12.0, 32.0, 32.0), t.text, DWRITE_TEXT_ALIGNMENT_CENTER);
-                p.text(&G_POWER.to_string(), &f.icon16, R::new(WIDTH - 48.0, r.y + 12.0, 32.0, 32.0), t.text, DWRITE_TEXT_ALIGNMENT_CENTER);
+                p.text(&G_REFRESH.to_string(), &f.icon16, R::new(WIDTH - 92.0, r.y + 10.0, 36.0, 36.0), t.text, DWRITE_TEXT_ALIGNMENT_CENTER);
+                p.text(&G_POWER.to_string(), &f.icon16, R::new(WIDTH - 50.0, r.y + 10.0, 36.0, 36.0), t.text, DWRITE_TEXT_ALIGNMENT_CENTER);
             }
         }
     }
