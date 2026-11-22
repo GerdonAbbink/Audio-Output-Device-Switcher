@@ -1,6 +1,6 @@
 [package]
 name = "audio-output-device-switcher"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Windows tray app that shows and switches your audio output device (headset/speakers), with optional SteelSeries Sonar support"
 authors = ["Gerdon Abbink"]
