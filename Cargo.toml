@@ -1,0 +1,25 @@
+[package]
+name = "audio-output-device-switcher"
+version = "0.1.0"
+edition = "2024"
+description = "Windows tray app that shows and switches your audio output device (headset/speakers), with optional SteelSeries Sonar support"
+authors = ["Gerdon Abbink"]
+license = "MIT"
+repository = "https://github.com/GerdonAbbink/Audio-Output-Device-Switcher"
+readme = "README.md"
+keywords = ["audio", "tray", "windows", "sonar", "headset"]
+
+[dependencies]
+native-tls = "0.2.18"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tiny-skia = "0.12.0"
+tray-icon = "0.26.1"
+ureq = { version = "2", default-features = false, features = ["json", "native-tls"] }
+windows = { version = "0.58", features = ["Foundation_Numerics", "Win32_Foundation", "Win32_Media_Audio", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem", "Win32_Devices_FunctionDiscovery", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_Security", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_DirectWrite", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_LibraryLoader"] }
+winreg = "0.56.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
