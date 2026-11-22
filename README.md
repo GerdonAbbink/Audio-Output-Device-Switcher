@@ -33,6 +33,7 @@ Developer options:
 - `cargo run` (debug build) opens a console and logs every state change.
 - `audio-output-device-switcher --dump-icons <dir>` writes all tray icons as PNGs.
 - `audio-output-device-switcher --show-flyout <x> <y>` opens the flyout at a screen point and keeps it open, for screenshots.
+- `cargo run --example make_icon` regenerates the exe icon (`assets/app.ico`). The version info shown in the exe's Properties dialog is set in `build.rs` and takes its version from `Cargo.toml`.
 
 ## How it works
 **Headset or speakers:** a device counts as a headset if its name contains a word like *headphone*, *headset* or *Arctis*. Otherwise the app uses the Windows endpoint form factor (Headphones/Headset → headset, anything else → speakers).
